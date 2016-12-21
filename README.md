@@ -1,4 +1,5 @@
 S3 Tool
+[![Build Status](https://travis-ci.org/zhaoy1/s3test.png?branch=master)](https://travis-ci.org/zhaoy1/s3test)
 ======
 
 S3 tool is used to do CRUD operation against an S3 compatible system. 
