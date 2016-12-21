@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,11 +32,9 @@ type S3Server struct {
 func main() {
 
 	bucket := flag.String("bucket", "", "the name of an existing bucket")
-	num := flag.Int("num", 1, "the number of objects to be created")
-	size := flag.Int("size", 1, "size of objects (KB)")
-	randomsize := flag.Bool("randomsize", false, "Random object size from 1K to 10M")
 	svrname := flag.String("server", "default", "S3 Server (from config.yml) to contact with")
-
+	//_ := flag.Int("num", 1, "the number of objects to be created")
+	//_ := flag.Bool("randomsize", false, "Random object size from 1K to 10M")
 	flag.Parse()
 
 	//Load server configuration
@@ -43,17 +42,27 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	//fmt.Println(*svr)
-	fmt.Println(*bucket, *num, *size, *randomsize)
 
 	//create s3 service
-	s3svc := s3.New(session.New(), &aws.Config{
+	cfg := &aws.Config{
 		Endpoint:         aws.String(svr.Endpoint),
 		Credentials:      credentials.NewStaticCredentials(svr.ID, svr.Secret, ""),
-		Region:           &svr.Region,
-		S3ForcePathStyle: aws.Bool(svr.Endpoint != ""),
-	})
+		Region:           aws.String(svr.Region),
+		S3ForcePathStyle: aws.Bool(true),
+		DisableSSL:       aws.Bool(false),
+	}
+	s3svc := s3.New(session.New(cfg))
 
+	//Create bucket if doesn't exist
+	if *bucket == "" {
+		*bucket = "s3-perf-test"
+	}
+	err = CreateBucket(s3svc, bucket)
+	if err != nil {
+		panic("Fail to create bucket: " + err.Error())
+	}
+
+	//Get the list of the object sizes
 	sl := strings.ToUpper(svr.SizeList)
 
 	sa := make([]int64, len(strings.Split(sl, ",")))
@@ -68,27 +77,27 @@ func main() {
 			sz = sz * 1024 * 1024 * 1024
 		} else if s[l-1] == 'T' {
 			sz = sz * 1024 * 1024 * 1024 * 1024
+		} else {
+			sz, _ = strconv.Atoi(s)
 		}
 
 		sa[idx] = int64(sz)
 		idx++
 	}
 
-	fmt.Println(sa)
+	//Performance statistics initilization.
+	ps, _ := NewPerfStats()
 
-	ps, _ := NewPerfStats(sa)
-
+	//Start uploading objects
 	var wg sync.WaitGroup
 	wg.Add(len(sa))
+	defer wg.Wait()
 	for _, sz := range sa {
-		fmt.Println("Start uploading...", sz, "*", svr.Count)
-		uploadRandomObj(&wg, ps, s3svc, "test-zhaoy1", sz, svr.Count)
+		log.Printf("Uploading object [%d]*%d.", sz, svr.Count)
+		uploadRandomObj(&wg, ps, s3svc, bucket, sz, svr.Count)
 	}
 
-	wg.Wait()
-
-	fmt.Println("Done uploading")
-	ps.PrintStats()
+	ps.Shutdown()
 
 }
 
@@ -114,11 +123,8 @@ func loadCfg(server string) (*S3Server, error) {
 }
 
 //upload a bunch of random object with the specified size
-func uploadRandomObj(wg *sync.WaitGroup, ps *PerfStats, svc *s3.S3, bucket string, size int64, count int) error {
-
+func uploadRandomObj(wg *sync.WaitGroup, ps *PerfStats, svc *s3.S3, bucket *string, size int64, count int) error {
 	defer wg.Done()
-
-	//TODO: create bucket if it doesn't exist
 
 	for i := 0; i < int(count); i++ {
 		obj, err := NewRandomObject("", "Test", size)
@@ -127,7 +133,7 @@ func uploadRandomObj(wg *sync.WaitGroup, ps *PerfStats, svc *s3.S3, bucket strin
 		}
 
 		params := &s3.PutObjectInput{
-			Bucket: aws.String(bucket),
+			Bucket: aws.String(*bucket),
 			Key:    aws.String(obj.Key),
 			Body:   obj,
 		}
@@ -139,7 +145,8 @@ func uploadRandomObj(wg *sync.WaitGroup, ps *PerfStats, svc *s3.S3, bucket strin
 			panic("Failed to upload object" + err2.Error())
 		}
 
-		ps.Add1Duration(size, (time.Now().Sub(t)).Nanoseconds()/1000000)
+		s := fmt.Sprintf("[PUT %d]", size)
+		ps.PostSample(s, size, (time.Since(t)).Nanoseconds()/1000000, size, 0)
 	}
 
 	return nil

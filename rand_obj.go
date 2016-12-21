@@ -53,17 +53,18 @@ func (o *RandomObject) Read(p []byte) (int, error) {
 }
 
 func (o *RandomObject) Seek(offset int64, whence int) (int64, error) {
-	if whence == io.SeekStart {
+	switch whence {
+	case io.SeekStart:
 		o.offset = offset
-	} else if whence == io.SeekCurrent {
+	case io.SeekCurrent:
 		o.offset += offset
-	} else {
+	case io.SeekEnd:
 		o.offset = o.Size
 	}
+
 	if o.offset > o.Size {
 		o.offset = o.Size
 	}
 
-	//	fmt.Println("Seek return", o.offset)
 	return o.offset, nil
 }
