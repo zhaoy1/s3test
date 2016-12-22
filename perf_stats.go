@@ -5,6 +5,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/influxdata/influxdb/client/v2"
 )
 
 type PerfStats struct {
@@ -15,11 +17,12 @@ type PerfStats struct {
 	egress  int64
 	ch      chan sample
 	wg      *sync.WaitGroup
+	grafana client.Client
+	grafdb  string
 }
 
 type stats struct {
 	opCnt       int
-	objsize     int64
 	totalElapse int64
 	max         int64
 	min         int64
@@ -29,18 +32,34 @@ type stats struct {
 
 type sample struct {
 	op      string
-	objsize int64
 	elapse  int64
 	egress  int64
 	ingress int64
 }
 
-func NewPerfStats() (*PerfStats, error) {
+func NewPerfStats(svr, db, user, pass string) (*PerfStats, error) {
 	ps := &PerfStats{
 		start:  time.Now(),
 		values: make(map[string]*stats, 20),
 		ch:     make(chan sample, 100),
 		wg:     &sync.WaitGroup{},
+	}
+
+	// Make client
+	for i := 0; i < 5; i++ {
+		client, err := client.NewHTTPClient(client.HTTPConfig{
+			Addr:     svr,
+			Username: user,
+			Password: pass,
+		})
+		if err != nil {
+			log.Println("Initialize GrafanaError: ", err)
+			time.Sleep(time.Second)
+		} else {
+			ps.grafana = client
+			ps.grafdb = db
+			break
+		}
 	}
 
 	ps.wg.Add(1)
@@ -50,8 +69,8 @@ func NewPerfStats() (*PerfStats, error) {
 	return ps, nil
 }
 
-func (p *PerfStats) PostSample(op string, objsize int64, elapsed int64, ingress, egress int64) {
-	p.ch <- sample{op, objsize, elapsed, ingress, egress}
+func (p *PerfStats) PostSample(op string, elapsed int64, ingress, egress int64) {
+	p.ch <- sample{op, elapsed, ingress, egress}
 }
 
 func (p *PerfStats) run() {
@@ -66,7 +85,7 @@ func (p *PerfStats) run() {
 				return
 			}
 			if _, prs := p.values[sa.op]; !prs {
-				p.values[sa.op] = &stats{1, sa.objsize, sa.elapse, sa.elapse, sa.elapse, sa.egress, sa.ingress}
+				p.values[sa.op] = &stats{1, sa.elapse, sa.elapse, sa.elapse, sa.egress, sa.ingress}
 			} else {
 				p.values[sa.op].opCnt += 1
 				p.values[sa.op].totalElapse += sa.elapse
@@ -82,6 +101,8 @@ func (p *PerfStats) run() {
 			p.opCnt += 1
 			p.ingress += sa.ingress
 			p.egress += sa.egress
+
+			p.postGrafanaMetric(&sa)
 
 		case <-tick:
 			if p.opCnt != lastOpCnt {
@@ -128,4 +149,32 @@ func speedStr(sp int64) string {
 	s := fmt.Sprintf("%.2f", float64(sp/div)) + ut + "b/s"
 
 	return s
+}
+
+func (p *PerfStats) postGrafanaMetric(s *sample) {
+	bp, _ := client.NewBatchPoints(client.BatchPointsConfig{
+		Database:  p.grafdb,
+		Precision: "ns",
+	})
+
+	tags := map[string]string{
+		"operation": s.op,
+	}
+
+	fields := map[string]interface{}{
+		"elapse": s.elapse,
+	}
+
+	pt, _ := client.NewPoint(
+		"Performance",
+		tags,
+		fields,
+		time.Now(),
+	)
+	bp.AddPoint(pt)
+
+	err := p.grafana.Write(bp)
+	if err != nil {
+		log.Println("Failed to write metric to grafana: ", err)
+	}
 }

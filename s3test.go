@@ -20,13 +20,17 @@ import (
 )
 
 type S3Server struct {
-	Region   string `yaml:"region"`
-	ID       string
-	Secret   string
-	Endpoint string
-	Signver  string
-	SizeList string `yaml:"sizelist"`
-	Count    int
+	Region      string `yaml:"region"`
+	ID          string
+	Secret      string
+	Endpoint    string
+	Signver     string
+	SizeList    string `yaml:"sizelist"`
+	Count       int
+	GrafanaSvr  string
+	GrafanaDB   string
+	GrafanaUser string
+	GrafanaPass string
 }
 
 func main() {
@@ -86,7 +90,7 @@ func main() {
 	}
 
 	//Performance statistics initilization.
-	ps, _ := NewPerfStats()
+	ps, _ := NewPerfStats(svr.GrafanaSvr, svr.GrafanaDB, svr.GrafanaUser, svr.GrafanaPass)
 
 	//Start uploading objects
 	var wg sync.WaitGroup
@@ -146,7 +150,7 @@ func uploadRandomObj(wg *sync.WaitGroup, ps *PerfStats, svc *s3.S3, bucket *stri
 		}
 
 		s := fmt.Sprintf("[PUT %d]", size)
-		ps.PostSample(s, size, (time.Since(t)).Nanoseconds()/1000000, size, 0)
+		ps.PostSample(s, (time.Since(t)).Nanoseconds()/1000000, size, 0)
 	}
 
 	return nil
